@@ -1,0 +1,7 @@
+{
+  "charger_id": "EVSE-01",
+  "command_id": 1,
+  "target_state": "STANDBY",
+  "power_limit_w": 0,
+  "timestamp": "2026-08-20T00:00:00Z"
+}
