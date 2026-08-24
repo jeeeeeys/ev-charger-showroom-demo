@@ -120,9 +120,23 @@ demonstration environment.
 Until the platform endpoint is ready, start the included server on a laptop
 connected to the same Wi-Fi network as the ESP8266:
 
+On macOS or Linux, run the Python version:
+
 ```bash
 python mock_api/server.py
 ```
+
+On Windows, open PowerShell in the repository root and run the native
+PowerShell version:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\mock_api\server.ps1
+```
+
+The PowerShell server uses only Windows PowerShell and built-in .NET classes;
+it does not require Python, Node.js, administrator privileges, or external
+PowerShell modules. Both versions listen on all network interfaces on TCP port
+8080. Press Ctrl+C to stop the server.
 
 Find the laptop's LAN address and set `secrets::API_URL` to, for example:
 
