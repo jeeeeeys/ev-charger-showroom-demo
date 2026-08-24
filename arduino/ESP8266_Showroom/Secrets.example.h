@@ -10,6 +10,6 @@ static constexpr char API_URL[] =
     "https://example.com/api/v1/chargers/EVSE-01/command";
 
 // Leave empty only when the mock endpoint does not require authentication.
-static constexpr char API_BEARER_TOKEN[] = "YOUR_DEVICE_TOKEN";
+static constexpr char API_KEY[] = "YOUR_API_KEY";
 
 }  // namespace secrets

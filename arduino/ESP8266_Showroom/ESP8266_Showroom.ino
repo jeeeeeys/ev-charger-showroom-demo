@@ -168,10 +168,8 @@ void executeApiRequest(ClientType& client) {
   }
 
   http.addHeader("Accept", "application/json");
-  if (strlen(secrets::API_BEARER_TOKEN) > 0) {
-    String authorization = F("Bearer ");
-    authorization += secrets::API_BEARER_TOKEN;
-    http.addHeader("Authorization", authorization);
+  if (strlen(secrets::API_KEY) > 0) {
+    http.addHeader("X-API-Key", secrets::API_KEY);
   }
 
   const int statusCode = http.GET();

@@ -105,10 +105,26 @@ The duplicated `ChargerProtocol` files must remain identical in both folders.
 
 1. Edit both copies of `ProjectConfig.h` if the charger ID or the 5 kW / 7 kW
    state mapping changes.
-2. Edit `arduino/ESP8266_Showroom/Secrets.h` and enter the Wi-Fi credentials,
-   API URL, and bearer token.
-3. Do not commit real credentials. `Secrets.h` is ignored by Git;
-   `Secrets.example.h` is the tracked template.
+2. Locally copy `arduino/ESP8266_Showroom/Secrets.example.h` to
+   `arduino/ESP8266_Showroom/Secrets.h`, then enter the actual Wi-Fi
+   credentials, API URL, and API key.
+3. Never commit real credentials or the real API key. `Secrets.h` is ignored by
+   Git; `Secrets.example.h` is the tracked template.
+
+The ESP8266 sends the key in the `X-API-Key` header on each platform request:
+
+```http
+GET /api/v1/chargers/EVSE-01/command HTTP/1.1
+Accept: application/json
+X-API-Key: YOUR_API_KEY
+
+```
+
+An invalid or missing key is expected to produce HTTP `401` or `403`, depending
+on the platform implementation. After changing Wi-Fi credentials, the API
+endpoint, or the API key, recompile and reupload only the ESP8266 firmware. The
+ATmega2560 firmware and Nextion display do not need to be reuploaded for these
+configuration-only changes.
 
 HTTPS currently uses `setInsecure()` only when
 `ALLOW_INSECURE_HTTPS_FOR_DEMO` is true. This is acceptable only for the isolated
@@ -143,7 +159,7 @@ Find the laptop's LAN address and set `secrets::API_URL` to, for example:
 ```cpp
 static constexpr char API_URL[] =
     "http://192.168.1.25:8080/api/v1/chargers/EVSE-01/command";
-static constexpr char API_BEARER_TOKEN[] = "";
+static constexpr char API_KEY[] = "";
 ```
 
 Edit `mock_api/command.json` to switch among the three test commands. Increment
