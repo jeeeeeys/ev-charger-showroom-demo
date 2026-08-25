@@ -23,6 +23,24 @@ uint32_t lastWifiAttemptAtMs = 0;
 uint32_t lastPollAtMs = 0;
 bool pollImmediately = true;
 bool wifiWasConnected = false;
+uint32_t apiAttemptCount = 0;
+
+void sendStatus(const char* category, const char* state) {
+  atmegaLink.print(F("STATUS|"));
+  atmegaLink.print(category);
+  atmegaLink.print('|');
+  atmegaLink.println(state);
+}
+
+template <typename ValueType>
+void sendStatusValue(const char* category, const char* state, ValueType value) {
+  atmegaLink.print(F("STATUS|"));
+  atmegaLink.print(category);
+  atmegaLink.print('|');
+  atmegaLink.print(state);
+  atmegaLink.print('|');
+  atmegaLink.println(value);
+}
 
 void debugLine(const char* text) {
   if (config::ENABLE_ESP_DEBUG_UART) {
@@ -57,12 +75,15 @@ bool copyJsonString(JsonVariantConst value, char* destination, size_t size) {
 }
 
 charger::ValidationError parseApiResponse(const String& payload,
-                                          charger::Command& command) {
+                                          charger::Command& command,
+                                          bool& jsonParsed) {
+  jsonParsed = false;
   StaticJsonDocument<512> document;
   const DeserializationError jsonError = deserializeJson(document, payload);
   if (jsonError) {
     return charger::ValidationError::INVALID_FORMAT;
   }
+  jsonParsed = true;
 
   charger::Command parsed = {};
 
@@ -154,7 +175,10 @@ bool forwardCommandToAtmega(const charger::Command& command) {
 
   atmegaLink.println(line);
   atmegaLink.flush();
-  return waitForAtmegaResponse(command.commandId);
+  const bool acknowledged = waitForAtmegaResponse(command.commandId);
+  sendStatusValue("UART", acknowledged ? "ACK_RECEIVED" : "NO_ACK",
+                  command.commandId);
+  return acknowledged;
 }
 
 template <typename ClientType>
@@ -172,17 +196,36 @@ void executeApiRequest(ClientType& client) {
     http.addHeader("X-API-Key", secrets::API_KEY);
   }
 
+  ++apiAttemptCount;
+  sendStatusValue("API", "REQUESTING", apiAttemptCount);
+
   const int statusCode = http.GET();
   debugHttpCode(statusCode);
 
-  if (statusCode != HTTP_CODE_OK) {
+  if (statusCode == HTTP_CODE_UNAUTHORIZED || statusCode == HTTP_CODE_FORBIDDEN) {
+    sendStatusValue("API", "AUTH_ERROR", statusCode);
     http.end();
     return;
   }
 
+  if (statusCode < 0) {
+    sendStatusValue("API", "CONNECTION_FAILED", statusCode);
+    http.end();
+    return;
+  }
+
+  if (statusCode != HTTP_CODE_OK) {
+    sendStatusValue("API", "HTTP_ERROR", statusCode);
+    http.end();
+    return;
+  }
+
+  sendStatusValue("API", "HTTP_OK", statusCode);
+
   const int responseSize = http.getSize();
   if (responseSize > 1024) {
     debugLine("API response is larger than the MVP limit");
+    sendStatus("API", "INVALID_JSON");
     http.end();
     return;
   }
@@ -191,15 +234,19 @@ void executeApiRequest(ClientType& client) {
   http.end();
 
   charger::Command command = {};
+  bool jsonParsed = false;
   const charger::ValidationError validation =
-      parseApiResponse(payload, command);
+      parseApiResponse(payload, command, jsonParsed);
   if (validation != charger::ValidationError::NONE) {
+    sendStatus("API", jsonParsed ? "INVALID_COMMAND" : "INVALID_JSON");
     if (config::ENABLE_ESP_DEBUG_UART) {
       debugPort.print(F("Rejected API response: "));
       debugPort.println(charger::validationErrorToString(validation));
     }
     return;
   }
+
+  sendStatus("API", "ACCESS_CONFIRMED");
 
   if (config::ENABLE_ESP_DEBUG_UART) {
     debugPort.print(F("Valid command received: "));
