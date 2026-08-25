@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <EasyNextionLibrary.h>
 #include <MFRC522.h>
+#include <SoftwareSerial.h>
 #include <SPI.h>
 
 #include "ChargerProtocol.h"
@@ -12,7 +13,10 @@
 namespace {
 
 HardwareSerial& espLink = Serial1;
-EasyNex myNex(Serial2);
+// Preserve the original working Nextion pin assignment and order.
+// SoftwareSerial constructor arguments are RX, TX.
+SoftwareSerial nexSerial(16, 17);
+EasyNex myNex(nexSerial);
 
 static constexpr uint8_t RFID_RST_PIN = 44;
 static constexpr uint8_t RFID_SS_PIN = 46;
