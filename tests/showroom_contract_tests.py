@@ -5,6 +5,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ATMEGA = (ROOT / "arduino/ATmega2560_Showroom/ATmega2560_Showroom.ino").read_text()
 ESP = (ROOT / "arduino/ESP8266_Showroom/ESP8266_Showroom.ino").read_text()
+ATMEGA_CONFIG = (ROOT / "arduino/ATmega2560_Showroom/ProjectConfig.h").read_text()
+ESP_CONFIG = (ROOT / "arduino/ESP8266_Showroom/ProjectConfig.h").read_text()
+
+for project_config in (ATMEGA_CONFIG, ESP_CONFIG):
+    assert "static constexpr uint32_t UART_BAUD = 9600;" in project_config
+    assert "static constexpr uint32_t DEBUG_BAUD = 115200;" in project_config
+    assert "static constexpr uint32_t ATMEGA_ACK_TIMEOUT_MS = 1000;" in project_config
+
+assert "Serial.begin(config::DEBUG_BAUD);" in ATMEGA
+assert "espLink.begin(config::UART_BAUD);" in ATMEGA
+assert ATMEGA.index("sendAck(received.commandId)") < ATMEGA.index("applyCommand(received)")
 
 for watts, current in ((5000, 22), (7000, 30)):
     assert (watts + 115) // 230 == current
@@ -42,4 +53,5 @@ assert 'sendStatus("WIFI", "DISCONNECTED")' in ESP
 for required in ('#include <time.h>', 'configTime(8 * 3600, 0, "pool.ntp.org", "time.nist.gov")',
                  'sendStatusValue("TIME", "UPDATE", timeText)', "maintainTime();"):
     assert required in ESP, required
+assert ESP.index("fetchLatestCommand();") < ESP.index("maintainTime();", ESP.index("void loop()"))
 print("All showroom contract tests passed.")

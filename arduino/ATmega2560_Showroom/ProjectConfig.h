@@ -10,7 +10,7 @@ static constexpr char CHARGER_ID[] = "EVSE-01";
 static constexpr uint32_t LIMITED_POWER_W = 5000;
 static constexpr uint32_t FULL_POWER_W = 7000;
 
-static constexpr uint32_t UART_BAUD = 115200;
+static constexpr uint32_t UART_BAUD = 9600;
 static constexpr uint32_t DEBUG_BAUD = 115200;
 
 // Keep disabled on the installed PCB. ESP UART0 is used by the ATmega link,
@@ -20,7 +20,7 @@ static constexpr bool ENABLE_ESP_DEBUG_UART = false;
 static constexpr uint32_t API_POLL_INTERVAL_MS = 5000;
 static constexpr uint32_t HTTP_TIMEOUT_MS = 5000;
 static constexpr uint32_t WIFI_RETRY_INTERVAL_MS = 10000;
-static constexpr uint32_t ATMEGA_ACK_TIMEOUT_MS = 300;
+static constexpr uint32_t ATMEGA_ACK_TIMEOUT_MS = 1000;
 
 // The ATmega returns to STANDBY if no valid API command reaches it in this time.
 static constexpr uint32_t COMMAND_TIMEOUT_MS = 60000;

@@ -378,8 +378,6 @@ void loop() {
     return;
   }
 
-  maintainTime();
-
   if (pollImmediately ||
       static_cast<uint32_t>(millis() - lastPollAtMs) >=
           config::API_POLL_INTERVAL_MS) {
@@ -387,6 +385,8 @@ void loop() {
     lastPollAtMs = millis();
     fetchLatestCommand();
   }
+
+  maintainTime();
 
   delay(1);
 }
