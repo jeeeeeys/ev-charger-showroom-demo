@@ -3,6 +3,8 @@
 #include "ChargerProtocol.h"
 #include "ProjectConfig.h"
 
+#include <string.h>
+
 namespace {
 
 // Confirmed charger PCB connection:
@@ -55,7 +57,56 @@ void applyCommand(const charger::Command& command) {
   printAppliedCommand(command);
 }
 
-void processLine(const char* line) {
+void handleStatus(char* line) {
+  // All recognized messages have at most three separators. Work directly on
+  // the bounded receive buffer rather than allocating Arduino String objects.
+  char* category = line + 7;  // Skip "STATUS|".
+  char* separator = strchr(category, '|');
+  if (separator == nullptr) return;
+  *separator = '\0';
+  char* state = separator + 1;
+  char* valueText = strchr(state, '|');
+  if (valueText != nullptr) {
+    *valueText++ = '\0';
+  }
+  const bool hasValue = valueText != nullptr && *valueText != '\0';
+
+  if (strcmp(category, "API") == 0) {
+    if (strcmp(state, "REQUESTING") == 0 && hasValue) {
+      Serial.print(F("[ESP] API request #"));
+      Serial.print(valueText);
+      Serial.println(F(" started"));
+    } else if (strcmp(state, "HTTP_OK") == 0 && hasValue) {
+      Serial.print(F("[ESP] HTTP response: "));
+      Serial.println(valueText);
+    } else if (strcmp(state, "ACCESS_CONFIRMED") == 0) {
+      Serial.println(F("[ESP] API access confirmed"));
+    } else if (strcmp(state, "AUTH_ERROR") == 0 && hasValue) {
+      Serial.print(F("[ESP] API authentication failed: HTTP "));
+      Serial.println(valueText);
+    } else if (strcmp(state, "HTTP_ERROR") == 0 && hasValue) {
+      Serial.print(F("[ESP] API HTTP error: "));
+      Serial.println(valueText);
+    } else if (strcmp(state, "CONNECTION_FAILED") == 0 && hasValue) {
+      Serial.print(F("[ESP] API connection failed: transport error "));
+      Serial.println(valueText);
+    } else if (strcmp(state, "INVALID_JSON") == 0) {
+      Serial.println(F("[ESP] API response contains invalid JSON"));
+    } else if (strcmp(state, "INVALID_COMMAND") == 0) {
+      Serial.println(F("[ESP] API response contains an invalid command"));
+    }
+  } else if (strcmp(category, "UART") == 0 && hasValue) {
+    if (strcmp(state, "ACK_RECEIVED") == 0) {
+      Serial.print(F("[ESP] ATmega ACK received for command "));
+      Serial.println(valueText);
+    } else if (strcmp(state, "NO_ACK") == 0) {
+      Serial.print(F("[ESP] No ATmega ACK received for command "));
+      Serial.println(valueText);
+    }
+  }
+}
+
+void processCommand(const char* line) {
   charger::Command received = {};
   const charger::ValidationError result = charger::parseUartCommandLine(
       line, config::CHARGER_ID, config::LIMITED_POWER_W,
@@ -100,6 +151,16 @@ void processLine(const char* line) {
   sendAck(received.commandId);
 }
 
+void dispatchLine(char* line) {
+  if (strncmp(line, "CMD|", 4) == 0) {
+    processCommand(line);
+  } else if (strncmp(line, "STATUS|", 7) == 0) {
+    handleStatus(line);
+  } else {
+    processCommand(line);
+  }
+}
+
 void readEspLink() {
   while (espLink.available() > 0) {
     const char incoming = static_cast<char>(espLink.read());
@@ -107,7 +168,7 @@ void readEspLink() {
     if (incoming == '\n') {
       receiveBuffer[receiveLength] = '\0';
       if (receiveLength > 0) {
-        processLine(receiveBuffer);
+        dispatchLine(receiveBuffer);
       }
       receiveLength = 0;
       continue;

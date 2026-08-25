@@ -61,6 +61,36 @@ Repeated valid commands refresh the ATmega communication timer without causing
 another state transition. If valid commands stop for 60 seconds, the ATmega
 returns to `UI_STANDBY`.
 
+### API diagnostics on the USB Serial Monitor
+
+For every API GET attempt, the ESP8266 sends a structured `STATUS|...` line to
+the ATmega over Serial1. The ATmega dispatches these separately from `CMD|...`
+lines and prints a readable `[ESP]` message on its USB Serial Monitor. Status
+lines are diagnostic only: the ATmega does not ACK them, interpret them as
+cloud commands, or use them to refresh the 60-second valid-command watchdog.
+
+Typical output includes:
+
+```text
+[ESP] API request #1 started
+[ESP] HTTP response: 200
+[ESP] API access confirmed
+[ESP] ATmega ACK received for command 12
+```
+
+`API access confirmed` has the specific meaning that the endpoint returned
+HTTP 200 **and** its response parsed as the expected JSON command and passed all
+existing command validation. A 200 response followed by `invalid JSON` or
+`invalid command` did not confirm access to a usable command.
+
+HTTP 401 and 403 prove that the configured endpoint was reached, but that API
+authentication failed. Other positive HTTP codes are reported as API HTTP
+errors. A negative ESP8266 `HTTPClient` result is a transport-level failure: the
+endpoint could not be reached because of conditions such as DNS resolution,
+timeout, TLS negotiation, or an unavailable server. The firmware does not make
+a separate Google, connectivity-site, or general-Internet test; it diagnoses
+only attempts to the configured API endpoint.
+
 ## Hardware UART assumption
 
 The charger schematic confirms ATmega2560 USART1 for the ESP link:
@@ -254,6 +284,25 @@ Target state: AVAILABLE
 Available power: 5000 W
 Timestamp: 2026-08-19T00:35:00Z
 Display state: UI_READY_LIMITED
+```
+
+Before that command output, a successful poll is reported as:
+
+```text
+[ESP] API request #1 started
+[ESP] HTTP response: 200
+[ESP] API access confirmed
+```
+
+After the command is sent, the ESP reports either the matching acknowledgement
+or its existing acknowledgement timeout:
+
+```text
+[ESP] ATmega ACK received for command 3
+```
+
+```text
+[ESP] No ATmega ACK received for command 3
 ```
 
 The later Nextion integration only needs to map `UI_STANDBY`,
