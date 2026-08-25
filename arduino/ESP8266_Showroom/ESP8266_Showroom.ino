@@ -10,6 +10,7 @@
 #include "Secrets.h"
 
 #include <string.h>
+#include <time.h>
 
 namespace {
 
@@ -24,6 +25,10 @@ uint32_t lastPollAtMs = 0;
 bool pollImmediately = true;
 bool wifiWasConnected = false;
 uint32_t apiAttemptCount = 0;
+static constexpr uint32_t NTP_RETRY_INTERVAL_MS = 60000;
+static constexpr time_t MIN_VALID_TIME = 1609459200;  // 2021-01-01 UTC
+uint32_t lastNtpStartAtMs = 0;
+int32_t lastSentLocalMinute = -1;
 
 void sendStatus(const char* category, const char* state) {
   atmegaLink.print(F("STATUS|"));
@@ -53,6 +58,32 @@ void debugHttpCode(int code) {
     debugPort.print(F("HTTP status: "));
     debugPort.println(code);
   }
+}
+
+void startNtpSynchronization() {
+  configTime(8 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+  lastNtpStartAtMs = millis();
+  lastSentLocalMinute = -1;
+  debugLine("NTP synchronization started");
+}
+
+void maintainTime() {
+  const time_t now = time(nullptr);
+  if (now < MIN_VALID_TIME) {
+    if (static_cast<uint32_t>(millis() - lastNtpStartAtMs) >=
+        NTP_RETRY_INTERVAL_MS) startNtpSynchronization();
+    return;
+  }
+
+  struct tm local = {};
+  localtime_r(&now, &local);
+  const int32_t localMinute = static_cast<int32_t>(now / 60);
+  if (localMinute == lastSentLocalMinute) return;
+
+  char timeText[6] = {};
+  snprintf(timeText, sizeof(timeText), "%02d:%02d", local.tm_hour, local.tm_min);
+  sendStatusValue("TIME", "UPDATE", timeText);
+  lastSentLocalMinute = localMinute;
 }
 
 bool copyJsonString(JsonVariantConst value, char* destination, size_t size) {
@@ -301,6 +332,7 @@ void maintainWifi() {
     if (!wifiWasConnected) {
       wifiWasConnected = true;
       pollImmediately = true;
+      startNtpSynchronization();
       atmegaLink.print(F("STATUS|WIFI|CONNECTED|"));
       atmegaLink.println(WiFi.localIP());
       if (config::ENABLE_ESP_DEBUG_UART) {
@@ -345,6 +377,8 @@ void loop() {
     delay(1);
     return;
   }
+
+  maintainTime();
 
   if (pollImmediately ||
       static_cast<uint32_t>(millis() - lastPollAtMs) >=

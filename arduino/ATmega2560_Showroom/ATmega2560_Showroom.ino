@@ -24,13 +24,15 @@ static constexpr uint8_t METER_CS_PIN = 48;
 MFRC522 mfrc522(RFID_SS_PIN, RFID_RST_PIN);
 
 // Keep all HMI identifiers here; session logic does not depend on their names.
+static constexpr char PAGE_STANDBY[] = "page page0";
 static constexpr char PAGE_TAP_RFID[] = "page page1";
 static constexpr char PAGE_ACTIVE[] = "page page2";
-static constexpr char TXT_VOLTAGE[] = "txtVoltage.txt";
-static constexpr char TXT_CURRENT[] = "txtCurrent.txt";
-static constexpr char TXT_POWER[] = "txtPower.txt";
-static constexpr char TXT_ENERGY[] = "txtEnergy.txt";
-static constexpr uint16_t PAGE_SETTLE_MS = 20;
+static constexpr char NUM_VOLTAGE[] = "numVoltage.val";
+static constexpr char NUM_CURRENT[] = "numCurrent.val";
+static constexpr char NUM_POWER[] = "numKW.val";
+static constexpr char NUM_ENERGY[] = "numKWH.val";
+static constexpr char TXT_TIME[] = "txtTime.txt";
+static constexpr uint16_t PAGE_SETTLE_MS = 50;
 static constexpr uint32_t RFID_COOLDOWN_MS = 1500;
 
 const uint8_t authorizedUIDs[][4] = {
@@ -47,42 +49,41 @@ bool sessionActive = false;
 uint8_t sessionUid[4] = {};
 uint32_t lastCardAtMs = 0;
 bool cardCooldownStarted = false;
-enum class Screen : uint8_t { TAP_RFID, ACTIVE };
-Screen currentScreen = Screen::TAP_RFID;
-
-void showTapPage() {
-  if (currentScreen != Screen::TAP_RFID) {
-    myNex.writeStr(PAGE_TAP_RFID);
-    currentScreen = Screen::TAP_RFID;
-  }
-}
-
-void formatFixed2(uint32_t scaledValue, char* output, size_t outputSize) {
-  snprintf(output, outputSize, "%lu.%02lu",
-           static_cast<unsigned long>(scaledValue / 100),
-           static_cast<unsigned long>(scaledValue % 100));
-}
+char latestTime[6] = "--:--";
+enum class Screen : uint8_t { STANDBY, TAP_RFID, ACTIVE };
+// Deliberately differs from the startup target so the first refresh sends page0.
+Screen currentScreen = Screen::ACTIVE;
 
 void writeActiveValues(uint32_t powerLimitW) {
-  char powerText[12] = {};
-  char currentText[12] = {};
-  const uint32_t powerCentiKw = powerLimitW / 10UL;
-  const uint32_t currentCentiA = (powerLimitW * 100UL + 115UL) / 230UL;
-  formatFixed2(powerCentiKw, powerText, sizeof(powerText));
-  formatFixed2(currentCentiA, currentText, sizeof(currentText));
-  myNex.writeStr(TXT_VOLTAGE, "230");
-  myNex.writeStr(TXT_POWER, powerText);
-  myNex.writeStr(TXT_CURRENT, currentText);
-  myNex.writeStr(TXT_ENERGY, "00");
+  const uint32_t currentA = (powerLimitW + 115UL) / 230UL;
+  myNex.writeNum(NUM_VOLTAGE, 230);
+  myNex.writeNum(NUM_POWER, powerLimitW);
+  myNex.writeNum(NUM_CURRENT, currentA);
+  myNex.writeNum(NUM_ENERGY, 0);
 }
 
-void showActivePage() {
-  if (currentScreen != Screen::ACTIVE) {
-    myNex.writeStr(PAGE_ACTIVE);
-    currentScreen = Screen::ACTIVE;
-    delay(PAGE_SETTLE_MS);
+bool cloudAvailable() {
+  return hasLastCommand && !communicationTimedOut &&
+         lastCommand.targetState == charger::TargetState::AVAILABLE;
+}
+
+void refreshDisplay() {
+  const Screen required = !cloudAvailable() ? Screen::STANDBY
+                           : sessionActive ? Screen::ACTIVE
+                                           : Screen::TAP_RFID;
+  if (required == currentScreen) {
+    if (required == Screen::ACTIVE) writeActiveValues(lastCommand.powerLimitW);
+    return;
   }
-  writeActiveValues(lastCommand.powerLimitW);
+  myNex.writeStr(required == Screen::STANDBY ? PAGE_STANDBY
+                 : required == Screen::TAP_RFID ? PAGE_TAP_RFID
+                                                : PAGE_ACTIVE);
+  currentScreen = required;
+  if (required == Screen::ACTIVE) {
+    delay(PAGE_SETTLE_MS);
+    writeActiveValues(lastCommand.powerLimitW);
+    myNex.writeStr(TXT_TIME, latestTime);
+  }
 }
 
 void cancelSession(const __FlashStringHelper* reason) {
@@ -92,12 +93,6 @@ void cancelSession(const __FlashStringHelper* reason) {
     Serial.print(F("RFID session cancelled: "));
     Serial.println(reason);
   }
-  showTapPage();
-}
-
-bool cloudAvailable() {
-  return hasLastCommand && !communicationTimedOut &&
-         lastCommand.targetState == charger::TargetState::AVAILABLE;
 }
 
 void sendAck(uint32_t id) { espLink.print(F("ACK|")); espLink.println(id); }
@@ -113,12 +108,17 @@ void applyCommand(const charger::Command& command) {
   Serial.print(F(" ")); Serial.print(command.powerLimitW); Serial.println(F(" W"));
   if (command.targetState == charger::TargetState::STANDBY) {
     cancelSession(F("cloud STANDBY"));
-  } else if (sessionActive) {
-    // A new AVAILABLE command changes the simulated values without another tap.
-    showActivePage();
-  } else {
-    showTapPage();
   }
+  refreshDisplay();
+}
+
+bool validTime(const char* value) {
+  if (strlen(value) != 5 || value[2] != ':') return false;
+  for (uint8_t i = 0; i < 5; ++i)
+    if (i != 2 && (value[i] < '0' || value[i] > '9')) return false;
+  const uint8_t hour = (value[0] - '0') * 10 + value[1] - '0';
+  const uint8_t minute = (value[3] - '0') * 10 + value[4] - '0';
+  return hour <= 23 && minute <= 59;
 }
 
 void handleStatus(char* line) {
@@ -130,7 +130,12 @@ void handleStatus(char* line) {
   char* value = strchr(state, '|');
   if (value) *value++ = '\0';
   const bool hasValue = value && *value;
-  if (strcmp(category, "WIFI") == 0) {
+  if (strcmp(category, "TIME") == 0) {
+    if (strcmp(state, "UPDATE") == 0 && hasValue && validTime(value)) {
+      memcpy(latestTime, value, sizeof(latestTime));
+      if (currentScreen == Screen::ACTIVE) myNex.writeStr(TXT_TIME, latestTime);
+    }
+  } else if (strcmp(category, "WIFI") == 0) {
     if (strcmp(state, "CONNECTING") == 0) Serial.println(F("[ESP] Connecting to Wi-Fi..."));
     else if (strcmp(state, "CONNECTED") == 0 && hasValue) {
       Serial.print(F("[ESP] Wi-Fi connected; IP: ")); Serial.println(value);
@@ -208,10 +213,10 @@ void handleRfid() {
   } else {
     printUid(mfrc522.uid.uidByte);
     if (!authorized(mfrc522.uid.uidByte)) Serial.println(F(" unauthorized; session unchanged"));
-    else if (sessionActive && uidEquals(mfrc522.uid.uidByte, sessionUid)) { Serial.println(F(" authorized; ending owned session")); cancelSession(F("owner tapped again")); }
+    else if (sessionActive && uidEquals(mfrc522.uid.uidByte, sessionUid)) { Serial.println(F(" authorized; ending owned session")); cancelSession(F("owner tapped again")); refreshDisplay(); }
     else if (sessionActive) Serial.println(F(" authorized, but another card already owns the active session"));
-    else if (!cloudAvailable()) Serial.println(F(" authorized, but charger is unavailable; remain on page1"));
-    else { memcpy(sessionUid, mfrc522.uid.uidByte, 4); sessionActive = true; Serial.println(F(" authorized; simulated session started")); showActivePage(); }
+    else if (!cloudAvailable()) Serial.println(F(" authorized, but charger is unavailable; remain on page0"));
+    else { memcpy(sessionUid, mfrc522.uid.uidByte, 4); sessionActive = true; Serial.println(F(" authorized; simulated session started")); refreshDisplay(); }
   }
   mfrc522.PICC_HaltA();
   mfrc522.PCD_StopCrypto1();
@@ -219,7 +224,7 @@ void handleRfid() {
 
 void enforceCommunicationTimeout() {
   if (!hasLastCommand || communicationTimedOut || static_cast<uint32_t>(millis() - lastValidCommandAtMs) < config::COMMAND_TIMEOUT_MS) return;
-  communicationTimedOut = true; Serial.println(F("Cloud command timeout")); cancelSession(F("communication timeout"));
+  communicationTimedOut = true; Serial.println(F("Cloud command timeout")); cancelSession(F("communication timeout")); refreshDisplay();
 }
 
 }  // namespace
@@ -229,8 +234,7 @@ void setup() {
   espLink.begin(115200);
   myNex.begin(9600);
   delay(500);
-  myNex.writeStr("page page1");
-  currentScreen = Screen::TAP_RFID;
+  refreshDisplay();
   pinMode(METER_CS_PIN, OUTPUT);
   digitalWrite(METER_CS_PIN, HIGH);
   SPI.begin();
