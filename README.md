@@ -66,7 +66,7 @@ All grounds are common.
 | --- | --- | --- |
 | ESP8266 UART | ESP TXD0 -> Mega D19/RX1; ESP RXD0 <- Mega D18/TX1 (`Serial1`) | 115200 |
 | USB monitor | Mega UART0 (`Serial`) | 115200 |
-| Nextion NX4832F035 | Mega D16/TX2 -> RX; D17/RX2 <- TX (`Serial2`) | 9600, 5 V |
+| Nextion NX4832F035 | Mega D16 RX <- TX; D17 TX -> RX (`SoftwareSerial`) | 9600, 5 V |
 | MFRC522 | RST D44/PL5; SS D46/PL3; MISO D50/PB3; MOSI D51/PB2; SCK D52/PB1 | hardware SPI, 3.3 V |
 | ATM90E36A | CS D48/PL1 | unused; output held HIGH |
 
@@ -91,8 +91,9 @@ without another tap. These actions are reported on the USB Serial Monitor.
 ## Nextion project
 
 The firmware uses only page `page1` (default, “Tap RFID”) and page `page2`
-(active simulation), via hardware `Serial2` and EasyNextionLibrary. It changes
-pages only on startup or a real transition.
+(active simulation), via Easy Nextion Library 1.0.6 and `SoftwareSerial` (RX =
+16, TX = 17, baud = 9600). It changes pages only on startup or a real
+transition.
 
 No editable `.HMI` is included, so update the Nextion project manually. Create
 Text components with a maximum text length of at least 16:
