@@ -52,9 +52,9 @@ reused ID with a changed payload is rejected. The ESP preserves the
 `X-API-Key` header and never logs credentials. Create the ignored
 `arduino/ESP8266_Showroom/Secrets.h` from `Secrets.example.h` locally.
 
-Commands use `CMD|...` and `ACK|id`/`NACK|id|reason`. Structured API, UART, and
-Wi-Fi `STATUS|...` diagnostics are not acknowledged and cannot refresh the
-watchdog or affect a session. API polling pauses while Wi-Fi is down and occurs
+Commands use `CMD|...` and `ACK|id`/`NACK|id|reason`. Structured API,
+UART, Wi-Fi, and time `STATUS|...` messages are not acknowledged and cannot
+refresh the watchdog or affect a session. API polling pauses while Wi-Fi is down and occurs
 immediately after reconnection. No external connectivity-check endpoint is
 used. Existing showroom HTTPS behavior is unchanged.
 
@@ -82,7 +82,7 @@ loop delay, and a cooldown prevents one tap from registering twice.
 
 An authorized card starts a simulated session only while a valid, non-timed-out
 `AVAILABLE` command exists. An unauthorized card or an authorized tap while
-unavailable leaves page 1 unchanged. The owner UID is retained: tapping that
+unavailable leaves standby page 0 unchanged. The owner UID is retained: tapping that
 same card again ends the session, while another authorized card cannot take or
 stop it. `STANDBY` or the 60-second communication timeout immediately cancels
 the session. A new valid `AVAILABLE` power command updates an active page 2
@@ -90,27 +90,26 @@ without another tap. These actions are reported on the USB Serial Monitor.
 
 ## Nextion project
 
-The firmware uses only page `page1` (default, “Tap RFID”) and page `page2`
-(active simulation), via Easy Nextion Library 1.0.6 and `SoftwareSerial` (RX =
-16, TX = 17, baud = 9600). It changes pages only on startup or a real
-transition.
+The three existing pages are `page0` (standby/off), `page1` (available and
+waiting for an RFID tap), and `page2` (active simulated session). The firmware
+uses Easy Nextion Library 1.0.6 and `SoftwareSerial` (RX = 16, TX = 17, baud =
+9600), and sends a page command only for a real transition.
 
-No editable `.HMI` is included, so update the Nextion project manually. Create
-Text components with a maximum text length of at least 16:
+No HMI changes are required. Page 2 reuses the programmed Number components
+`numVoltage`, `numCurrent`, `numKW`, and `numKWH`, plus the Text component
+`txtTime`. All charger values are integers without units: voltage is `230`,
+power is `5000` or `7000`, current is the nearest whole ampere (`22` or `30`),
+and `numKWH.val` remains zero. The HMI itself controls visual padding.
 
-| Page 2 Text component | Dynamic `.txt` value | Separate static label |
-| --- | --- | --- |
-| `txtVoltage` | `230` | `V` |
-| `txtPower` | `5.00` or `7.00` | `kW` |
-| `txtCurrent` | `21.74` or `30.43` | `A` |
-| `txtEnergy` | `00` | `kWh` |
+After each Wi-Fi connection the ESP8266 starts non-blocking NTP synchronization
+for Philippine local time (UTC+8, no daylight saving). It sends
+`STATUS|TIME|UPDATE|HH:MM` immediately when time becomes valid and thereafter
+only when the minute changes. The ATmega retains the latest value for `txtTime`;
+until then it displays `--:--`. NTP retries never block or disable API polling,
+and reconnection causes the current time to be sent again.
 
-The four dynamic values are numeric characters only—no spaces or units. Voltage
-is fixed at 230 V. Integer arithmetic calculates hundredths of an ampere as
-`(power_limit_w * 100 + 115) / 230`, rounded to 0.01 A. Energy remains exactly
-`00` for the entire demo. Ensure the HMI page names are exactly `page1` and
-`page2`; no touch events, connectivity page, fault page, or maintenance page is
-required.
+No touch events, connectivity page, fault page, or maintenance page is required,
+and every existing pin assignment remains unchanged.
 
 ## Arduino IDE setup
 
@@ -141,7 +140,8 @@ Run the portable protocol checks with:
 ./tests/run_host_tests.sh
 ```
 
-Physical verification must confirm page startup/transitions, all four RFID
-cards and ownership rules, the 5/7 kW values, active-session power updates,
-timeout/STANDBY cancellation, Wi-Fi loss/restoration diagnostics, ongoing ESP
-poll/ACK behavior during scans, and that no power output is activated.
+Physical verification must confirm page 0 startup/STANDBY/timeout behavior,
+page 1 availability, page 2 RFID transitions, all four cards and ownership
+rules, integer 5/7 kW values, active-session power updates, minute-by-minute NTP
+time, Wi-Fi loss/restoration diagnostics, ongoing ESP poll/ACK behavior during
+scans, and that no power output is activated.
