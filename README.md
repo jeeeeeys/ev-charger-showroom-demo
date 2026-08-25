@@ -1,18 +1,19 @@
-# EV Charger Showroom Communications MVP
+# EV Charger Showroom Demo
 
-This project implements the first showroom-development milestone:
+This repository implements an **indoor, display-only simulation**:
 
 ```text
-Platform or mock API -> ESP8266 -> UART -> ATmega2560 -> USB serial monitor
+Platform/mock API -> ESP8266 -> Serial1 -> ATmega2560 -> RFID + Nextion
 ```
 
-It deliberately does not control the contactor, pilot circuit, metering IC, or
-Nextion display. The ATmega exposes a three-state display interface that can be
-connected to the display later.
+It has no relay, contactor, PWM, control-pilot, vehicle detection, ATM90E36A
+metering, energy accumulation, or charging/power-delivery functionality. Never
+connect a vehicle on the strength of this demonstration firmware.
 
-## Agreed API response
+## API and UART protocol
 
-The GET endpoint must return one JSON object containing all five fields:
+The ESP accepts the command either directly at the JSON root or, temporarily,
+inside a top-level `data` object:
 
 ```json
 {
@@ -20,295 +21,126 @@ The GET endpoint must return one JSON object containing all five fields:
   "command_id": 3,
   "target_state": "AVAILABLE",
   "power_limit_w": 5000,
-  "timestamp": "2026-08-19T00:35:00Z"
+  "timestamp": "2026-08-25T00:10:11Z"
 }
 ```
 
-For this MVP, the accepted combinations are:
-
-| `target_state` | `power_limit_w` | Internal display state |
-| --- | ---: | --- |
-| `STANDBY` | `0` | `UI_STANDBY` |
-| `AVAILABLE` | `5000` | `UI_READY_LIMITED` |
-| `AVAILABLE` | `7000` | `UI_READY_FULL` |
-
-`command_id` is a positive integer that increases whenever the platform issues
-a new command. Repeated GET responses for the current command retain the same
-ID. `timestamp` must use the exact UTC form `YYYY-MM-DDTHH:MM:SSZ`.
-
-## UART contract
-
-The ESP sends one newline-terminated command every time it receives a valid API
-response:
-
-```text
-CMD|EVSE-01|3|AVAILABLE|5000|2026-08-19T00:35:00Z
+```json
+{
+  "data": {
+    "charger_id": "EVSE-01",
+    "command_id": 3,
+    "target_state": "STANDBY",
+    "power_limit_w": 0,
+    "timestamp": "2026-08-25T00:10:11Z"
+  }
+}
 ```
 
-The ATmega responds with:
+If `data` is present it must be an object. Both forms require the exact charger
+ID, a positive numeric command ID, numeric power, an exact
+`YYYY-MM-DDTHH:MM:SSZ` timestamp, and one of these combinations:
 
-```text
-ACK|3
-```
+| State | Power |
+| --- | ---: |
+| `STANDBY` | 0 W |
+| `AVAILABLE` | 5000 W or 7000 W |
 
-or:
+The platform must increment `command_id` whenever payload fields change. An
+identical repeated command refreshes the 60-second watchdog; a lower ID or a
+reused ID with a changed payload is rejected. The ESP preserves the
+`X-API-Key` header and never logs credentials. Create the ignored
+`arduino/ESP8266_Showroom/Secrets.h` from `Secrets.example.h` locally.
 
-```text
-NACK|3|REASON
-```
+Commands use `CMD|...` and `ACK|id`/`NACK|id|reason`. Structured API, UART, and
+Wi-Fi `STATUS|...` diagnostics are not acknowledged and cannot refresh the
+watchdog or affect a session. API polling pauses while Wi-Fi is down and occurs
+immediately after reconnection. No external connectivity-check endpoint is
+used. Existing showroom HTTPS behavior is unchanged.
 
-Repeated valid commands refresh the ATmega communication timer without causing
-another state transition. If valid commands stop for 60 seconds, the ATmega
-returns to `UI_STANDBY`.
+## Fixed wiring
 
-### API diagnostics on the USB Serial Monitor
+All grounds are common.
 
-For every API GET attempt, the ESP8266 sends a structured `STATUS|...` line to
-the ATmega over Serial1. The ATmega dispatches these separately from `CMD|...`
-lines and prints a readable `[ESP]` message on its USB Serial Monitor. Status
-lines are diagnostic only: the ATmega does not ACK them, interpret them as
-cloud commands, or use them to refresh the 60-second valid-command watchdog.
+| Function | Fixed wiring | Baud/power |
+| --- | --- | --- |
+| ESP8266 UART | ESP TXD0 -> Mega D19/RX1; ESP RXD0 <- Mega D18/TX1 (`Serial1`) | 115200 |
+| USB monitor | Mega UART0 (`Serial`) | 115200 |
+| Nextion NX4832F035 | Mega D16/TX2 -> RX; D17/RX2 <- TX (`Serial2`) | 9600, 5 V |
+| MFRC522 | RST D44/PL5; SS D46/PL3; MISO D50/PB3; MOSI D51/PB2; SCK D52/PB1 | hardware SPI, 3.3 V |
+| ATM90E36A | CS D48/PL1 | unused; output held HIGH |
 
-Typical output includes:
+D48 is driven HIGH **before** `SPI.begin()` and RFID initialization so the
+unused meter releases the shared bus. The firmware never initializes or reads
+the meter. Pins 10 and 11 are not used.
 
-```text
-[ESP] API request #1 started
-[ESP] HTTP response: 200
-[ESP] API access confirmed
-[ESP] ATmega ACK received for command 12
-```
+## RFID and cloud behavior
 
-`API access confirmed` has the specific meaning that the endpoint returned
-HTTP 200 **and** its response parsed as the expected JSON command and passed all
-existing command validation. A 200 response followed by `invalid JSON` or
-`invalid command` did not confirm access to a usable command.
+The four authorized four-byte UIDs are `B3:E2:E1:C7`, `B3:C7:E0:C8`,
+`43:D1:FD:E3`, and `33:5F:07:E4`. Scanning runs continuously without a blocking
+loop delay, and a cooldown prevents one tap from registering twice.
 
-HTTP 401 and 403 prove that the configured endpoint was reached, but that API
-authentication failed. Other positive HTTP codes are reported as API HTTP
-errors. A negative ESP8266 `HTTPClient` result is a transport-level failure: the
-endpoint could not be reached because of conditions such as DNS resolution,
-timeout, TLS negotiation, or an unavailable server. The firmware does not make
-a separate Google, connectivity-site, or general-Internet test; it diagnoses
-only attempts to the configured API endpoint.
+An authorized card starts a simulated session only while a valid, non-timed-out
+`AVAILABLE` command exists. An unauthorized card or an authorized tap while
+unavailable leaves page 1 unchanged. The owner UID is retained: tapping that
+same card again ends the session, while another authorized card cannot take or
+stop it. `STANDBY` or the 60-second communication timeout immediately cancels
+the session. A new valid `AVAILABLE` power command updates an active page 2
+without another tap. These actions are reported on the USB Serial Monitor.
 
-## Hardware UART assumption
+## Nextion project
 
-The charger schematic confirms ATmega2560 USART1 for the ESP link:
+The firmware uses only page `page1` (default, “Tap RFID”) and page `page2`
+(active simulation), via hardware `Serial2` and EasyNextionLibrary. It changes
+pages only on startup or a real transition.
 
-| Device signal | MCU package pin | Arduino pin/use |
-| --- | ---: | --- |
-| ATmega `PD2/RXD1/INT2` | 45 | Mega D19/RX1, ESP link |
-| ATmega `PD3/TXD1/INT3` | 46 | Mega D18/TX1, ESP link |
-| ATmega UART0 | — | USB serial monitor, 115200 baud |
-| ESP8266 `TXD0/GPIO1` | ESP-12F pin 16 | ATmega link |
-| ESP8266 `RXD0/GPIO3` | ESP-12F pin 15 | ATmega link |
+No editable `.HMI` is included, so update the Nextion project manually. Create
+Text components with a maximum text length of at least 16:
 
-The PCB includes two BSN20 MOSFET level-shifter channels with 10 kOhm pull-ups
-to 3.3 V and 5 V. Both controllers share digital ground.
+| Page 2 Text component | Dynamic `.txt` value | Separate static label |
+| --- | --- | --- |
+| `txtVoltage` | `230` | `V` |
+| `txtPower` | `5.00` or `7.00` | `kW` |
+| `txtCurrent` | `21.74` or `30.43` | `A` |
+| `txtEnergy` | `00` | `kWh` |
 
-P1 and P2 provide the required logical crossing:
+The four dynamic values are numeric characters only—no spaces or units. Voltage
+is fixed at 230 V. Integer arithmetic calculates hundredths of an ampere as
+`(power_limit_w * 100 + 115) / 230`, rounded to 0.01 A. Energy remains exactly
+`00` for the entire demo. Ensure the HMI page names are exactly `page1` and
+`page2`; no touch events, connectivity page, fault page, or maintenance page is
+required.
 
-```text
-ESP TXD0/GPIO1 -> Q2 -> TX -> P1 -> ATmega PD2/RXD1
-ESP RXD0/GPIO3 <- Q1 <- RX <- P2 <- ATmega PD3/TXD1
-```
+## Arduino IDE setup
 
-Therefore, ESP transmit reaches ATmega receive, and ATmega transmit reaches ESP
-receive. No additional UART crossover is required.
+Open and upload the sketches separately:
 
-ESP debug output is disabled. UART0 carries only protocol messages to the
-ATmega, and the ATmega UART0 serial monitor provides all required diagnostics.
+* `arduino/ESP8266_Showroom/ESP8266_Showroom.ino` — Generic ESP8266 Module.
+* `arduino/ATmega2560_Showroom/ATmega2560_Showroom.ino` — Arduino Mega or Mega
+  2560.
 
-## Arduino IDE sketch folders
+Install these libraries from Arduino IDE Library Manager:
 
-Open and upload the two sketches separately:
+* **ArduinoJson** (ESP8266; ArduinoJson 6 or 7)
+* **MFRC522** (ATmega2560)
+* **EasyNextionLibrary** (ATmega2560)
 
-| Controller | Sketch to open |
-| --- | --- |
-| ESP-12F / ESP8266 | `arduino/ESP8266_Showroom/ESP8266_Showroom.ino` |
-| ATmega2560 | `arduino/ATmega2560_Showroom/ATmega2560_Showroom.ino` |
+The standard ESP8266 and Arduino AVR board cores are also required. The two
+copies of `ChargerProtocol` must remain identical.
 
-Each folder is self-contained so it can be opened directly in Arduino IDE.
-The duplicated `ChargerProtocol` files must remain identical in both folders.
+## Local API and host verification
 
-## Configuration
+Run `python mock_api/server.py` (or `mock_api/server.ps1` on Windows), configure
+the local URL in the untracked `Secrets.h`, and edit `mock_api/command.json`.
+Increment the ID and timestamp for every changed command.
 
-1. Edit both copies of `ProjectConfig.h` if the charger ID or the 5 kW / 7 kW
-   state mapping changes.
-2. Locally copy `arduino/ESP8266_Showroom/Secrets.example.h` to
-   `arduino/ESP8266_Showroom/Secrets.h`, then enter the actual Wi-Fi
-   credentials, API URL, and API key.
-3. Never commit real credentials or the real API key. `Secrets.h` is ignored by
-   Git; `Secrets.example.h` is the tracked template.
-
-The ESP8266 sends the key in the `X-API-Key` header on each platform request:
-
-```http
-GET /api/v1/chargers/EVSE-01/command HTTP/1.1
-Accept: application/json
-X-API-Key: YOUR_API_KEY
-
-```
-
-An invalid or missing key is expected to produce HTTP `401` or `403`, depending
-on the platform implementation. After changing Wi-Fi credentials, the API
-endpoint, or the API key, recompile and reupload only the ESP8266 firmware. The
-ATmega2560 firmware and Nextion display do not need to be reuploaded for these
-configuration-only changes.
-
-HTTPS currently uses `setInsecure()` only when
-`ALLOW_INSECURE_HTTPS_FOR_DEMO` is true. This is acceptable only for the isolated
-showroom MVP. Configure CA validation before the design is used outside the
-demonstration environment.
-
-## Run the local mock API
-
-Until the platform endpoint is ready, start the included server on a laptop
-connected to the same Wi-Fi network as the ESP8266:
-
-On macOS or Linux, run the Python version:
-
-```bash
-python mock_api/server.py
-```
-
-On Windows, open PowerShell in the repository root and run the native
-PowerShell version:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\mock_api\server.ps1
-```
-
-The PowerShell server uses only Windows PowerShell and built-in .NET classes;
-it does not require Python, Node.js, administrator privileges, or external
-PowerShell modules. Both versions listen on all network interfaces on TCP port
-8080. Press Ctrl+C to stop the server.
-
-Find the laptop's LAN address and set `secrets::API_URL` to, for example:
-
-```cpp
-static constexpr char API_URL[] =
-    "http://192.168.1.25:8080/api/v1/chargers/EVSE-01/command";
-static constexpr char API_KEY[] = "";
-```
-
-Edit `mock_api/command.json` to switch among the three test commands. Increment
-`command_id` and update `timestamp` whenever a new command is issued. The laptop
-firewall must allow incoming TCP connections to port 8080 on the private network.
-
-## Build and upload with Arduino IDE
-
-### One-time setup
-
-1. Install the ESP8266 board package in Arduino IDE's Boards Manager.
-2. Install `ArduinoJson` by Benoit Blanchon in Library Manager. The ESP sketch
-   uses `StaticJsonDocument`, which is supported by ArduinoJson 6 and 7.
-3. The ATmega sketch uses only the standard Arduino AVR core.
-
-### ESP-12F settings
-
-Open `arduino/ESP8266_Showroom/ESP8266_Showroom.ino`, then use the settings
-already proven on this PCB:
-
-| Setting | Value |
-| --- | --- |
-| Board | Generic ESP8266 Module |
-| Upload speed | 115200 |
-| CPU frequency | 80 MHz |
-| Flash size | 4 MB (FS: none) |
-| Flash frequency | 40 MHz |
-| Flash mode | DIO |
-| Reset method | `ck` |
-| Debug port / level | Disabled / None |
-| lwIP variant | v2 Lower Memory |
-| VTables | Flash |
-| Builtin LED | 2 |
-| Erase flash | Only Sketch |
-| Programmer | Default |
-
-ESP-12F flashing also requires its boot-mode pins to be accessible and correctly
-strapped. Confirm GPIO0, EN, RESET, GPIO2, and GPIO15 before attempting an upload.
-
-### Confirmed manual flash procedure
-
-1. Connect the USB-UART adapter ground to `DGND`. Do not connect its 5 V output.
-2. Connect adapter `D0` to the board `TX` jumper pad and adapter `D1` to the
-   board `RX` jumper pad, following the previously working setup.
-3. Short `GPIO0` to ground.
-4. Briefly short `NRST` to ground, then release `NRST` while keeping GPIO0 low.
-5. Upload the ESP firmware at 115200 baud.
-6. Remove the GPIO0-to-ground short.
-7. Briefly short `NRST` to ground again to boot the application.
-
-When the USB-UART adapter is connected, ensure the ATmega-side UART transmitter
-is isolated or inactive so that it does not contend with the adapter.
-
-### ATmega2560 settings
-
-Open `arduino/ATmega2560_Showroom/ATmega2560_Showroom.ino` and select:
-
-| Setting | Value |
-| --- | --- |
-| Board | Arduino Mega or Mega 2560 |
-| Processor | ATmega2560 |
-| Serial Monitor baud | 115200 |
-
-Upload the ATmega sketch, then open Serial Monitor at 115200 baud. Restore the
-P1/P2 UART path after ESP flashing so the ESP and ATmega can communicate.
-
-See `HARDWARE_NOTES.md` for the full MCU pin allocation supplied for this PCB.
-
-## Host-side protocol test
-
-The shared UART parser and state mapping can be tested without either board:
+Run the portable protocol checks with:
 
 ```bash
 ./tests/run_host_tests.sh
 ```
 
-The test covers all three valid states and rejection of malformed commands,
-wrong charger IDs, invalid command IDs, invalid timestamps, and unsupported
-power limits.
-
-## Expected ATmega serial monitor output
-
-```text
-EV charger showroom controller
-Initial state: UI_STANDBY
-Waiting for a valid cloud command from ESP8266...
-
-Cloud command applied
-Charger ID: EVSE-01
-Command ID: 3
-Target state: AVAILABLE
-Available power: 5000 W
-Timestamp: 2026-08-19T00:35:00Z
-Display state: UI_READY_LIMITED
-```
-
-Before that command output, a successful poll is reported as:
-
-```text
-[ESP] API request #1 started
-[ESP] HTTP response: 200
-[ESP] API access confirmed
-```
-
-After the command is sent, the ESP reports either the matching acknowledgement
-or its existing acknowledgement timeout:
-
-```text
-[ESP] ATmega ACK received for command 3
-```
-
-```text
-[ESP] No ATmega ACK received for command 3
-```
-
-The later Nextion integration only needs to map `UI_STANDBY`,
-`UI_READY_LIMITED`, and `UI_READY_FULL` to its three pages.
-
-## Configuration references
-
-- [ESP8266 Arduino core IDE options](https://arduino-esp8266.readthedocs.io/en/latest/ideoptions.html)
-- [Arduino Mega AVR pin mapping](https://github.com/arduino/ArduinoCore-avr/blob/master/variants/mega/pins_arduino.h)
+Physical verification must confirm page startup/transitions, all four RFID
+cards and ownership rules, the 5/7 kW values, active-session power updates,
+timeout/STANDBY cancellation, Wi-Fi loss/restoration diagnostics, ongoing ESP
+poll/ACK behavior during scans, and that no power output is activated.

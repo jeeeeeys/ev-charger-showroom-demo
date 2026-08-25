@@ -85,33 +85,41 @@ charger::ValidationError parseApiResponse(const String& payload,
   }
   jsonParsed = true;
 
+  JsonVariantConst commandJson = document.as<JsonVariantConst>();
+  if (document.containsKey("data")) {
+    if (!document["data"].is<JsonObjectConst>()) {
+      return charger::ValidationError::INVALID_FORMAT;
+    }
+    commandJson = document["data"];
+  }
+
   charger::Command parsed = {};
 
-  if (!copyJsonString(document["charger_id"], parsed.chargerId,
+  if (!copyJsonString(commandJson["charger_id"], parsed.chargerId,
                       sizeof(parsed.chargerId))) {
     return charger::ValidationError::INVALID_CHARGER_ID;
   }
 
-  JsonVariantConst commandId = document["command_id"];
+  JsonVariantConst commandId = commandJson["command_id"];
   if (!commandId.is<unsigned long>()) {
     return charger::ValidationError::INVALID_COMMAND_ID;
   }
   parsed.commandId = static_cast<uint32_t>(commandId.as<unsigned long>());
 
   char targetState[16] = {};
-  if (!copyJsonString(document["target_state"], targetState,
+  if (!copyJsonString(commandJson["target_state"], targetState,
                       sizeof(targetState)) ||
       !charger::parseTargetState(targetState, parsed.targetState)) {
     return charger::ValidationError::INVALID_TARGET_STATE;
   }
 
-  JsonVariantConst powerLimit = document["power_limit_w"];
+  JsonVariantConst powerLimit = commandJson["power_limit_w"];
   if (!powerLimit.is<unsigned long>()) {
     return charger::ValidationError::INVALID_POWER_LIMIT;
   }
   parsed.powerLimitW = static_cast<uint32_t>(powerLimit.as<unsigned long>());
 
-  if (!copyJsonString(document["timestamp"], parsed.timestamp,
+  if (!copyJsonString(commandJson["timestamp"], parsed.timestamp,
                       sizeof(parsed.timestamp))) {
     return charger::ValidationError::INVALID_TIMESTAMP;
   }
@@ -188,6 +196,7 @@ void executeApiRequest(ClientType& client) {
 
   if (!http.begin(client, secrets::API_URL)) {
     debugLine("Could not begin HTTP request");
+    sendStatus("API", "HTTP_INIT_FAILED");
     return;
   }
 
@@ -238,7 +247,12 @@ void executeApiRequest(ClientType& client) {
   const charger::ValidationError validation =
       parseApiResponse(payload, command, jsonParsed);
   if (validation != charger::ValidationError::NONE) {
-    sendStatus("API", jsonParsed ? "INVALID_COMMAND" : "INVALID_JSON");
+    if (jsonParsed) {
+      sendStatusValue("API", "INVALID_COMMAND",
+                      charger::validationErrorToString(validation));
+    } else {
+      sendStatus("API", "INVALID_JSON");
+    }
     if (config::ENABLE_ESP_DEBUG_UART) {
       debugPort.print(F("Rejected API response: "));
       debugPort.println(charger::validationErrorToString(validation));
@@ -275,6 +289,7 @@ void fetchLatestCommand() {
 void startWifiConnection() {
   lastWifiAttemptAtMs = millis();
   debugLine("Connecting to Wi-Fi...");
+  sendStatus("WIFI", "CONNECTING");
   WiFi.disconnect();
   WiFi.begin(secrets::WIFI_SSID, secrets::WIFI_PASSWORD);
 }
@@ -286,6 +301,8 @@ void maintainWifi() {
     if (!wifiWasConnected) {
       wifiWasConnected = true;
       pollImmediately = true;
+      atmegaLink.print(F("STATUS|WIFI|CONNECTED|"));
+      atmegaLink.println(WiFi.localIP());
       if (config::ENABLE_ESP_DEBUG_UART) {
         debugPort.print(F("Wi-Fi connected, IP: "));
         debugPort.println(WiFi.localIP());
@@ -297,6 +314,7 @@ void maintainWifi() {
   if (wifiWasConnected) {
     wifiWasConnected = false;
     debugLine("Wi-Fi disconnected");
+    sendStatus("WIFI", "DISCONNECTED");
   }
 
   if (static_cast<uint32_t>(millis() - lastWifiAttemptAtMs) >=
