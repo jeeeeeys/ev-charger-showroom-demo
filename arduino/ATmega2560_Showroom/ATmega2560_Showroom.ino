@@ -102,14 +102,19 @@ void sendNack(uint32_t id, const char* reason) {
 }
 
 void applyCommand(const charger::Command& command) {
+  const bool sessionWasActive = sessionActive;
+  if (command.targetState == charger::TargetState::STANDBY) {
+    sessionActive = false;
+    memset(sessionUid, 0, sizeof(sessionUid));
+  }
+  refreshDisplay();
   Serial.print(F("Cloud command applied: "));
   Serial.print(command.commandId); Serial.print(F(" "));
   Serial.print(charger::targetStateToString(command.targetState));
   Serial.print(F(" ")); Serial.print(command.powerLimitW); Serial.println(F(" W"));
-  if (command.targetState == charger::TargetState::STANDBY) {
-    cancelSession(F("cloud STANDBY"));
+  if (sessionWasActive && !sessionActive) {
+    Serial.println(F("RFID session cancelled: cloud STANDBY"));
   }
-  refreshDisplay();
 }
 
 bool validTime(const char* value) {
@@ -169,11 +174,14 @@ void processCommand(const char* line) {
   if (hasLastCommand && received.commandId == lastCommand.commandId) {
     if (!charger::commandsHaveSamePayload(received, lastCommand)) { Serial.println(F("Rejected reused command ID with different payload")); sendNack(received.commandId, "COMMAND_ID_REUSED"); return; }
     lastValidCommandAtMs = millis();
-    if (communicationTimedOut) { communicationTimedOut = false; Serial.println(F("Cloud communication restored")); applyCommand(received); }
-    sendAck(received.commandId); return;
+    const bool wasTimedOut = communicationTimedOut;
+    communicationTimedOut = false;
+    sendAck(received.commandId);
+    if (wasTimedOut) { applyCommand(received); Serial.println(F("Cloud communication restored")); }
+    return;
   }
   lastCommand = received; hasLastCommand = true; communicationTimedOut = false;
-  lastValidCommandAtMs = millis(); applyCommand(received); sendAck(received.commandId);
+  lastValidCommandAtMs = millis(); sendAck(received.commandId); applyCommand(received);
 }
 
 void dispatchLine(char* line) {
@@ -230,8 +238,8 @@ void enforceCommunicationTimeout() {
 }  // namespace
 
 void setup() {
-  Serial.begin(115200);
-  espLink.begin(115200);
+  Serial.begin(config::DEBUG_BAUD);
+  espLink.begin(config::UART_BAUD);
   myNex.begin(9600);
   delay(500);
   refreshDisplay();
